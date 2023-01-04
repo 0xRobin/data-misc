@@ -9,9 +9,11 @@ from dune_client.types import QueryParameter
 
 from duneapi.types import Address
 from web3 import Web3
+from tqdm import tqdm
 
 from src.constants import ERC20_ABI
 from src.utils import Network
+
 
 V1_QUERY = DuneQuery(name="V1: Missing Tokens", query_id=1317323)
 
@@ -93,7 +95,7 @@ def fetch_missing_tokens(dune: DuneClient, network: Network) -> list[Address]:
     """Uses Official Dune API and to fetch Missing Tokens for V2 Engine"""
     query = DuneQuery(
         name="V2: Missing Tokens",
-        query_id=1403073,
+        query_id=1842715,
         params=[QueryParameter.enum_type("Blockchain", network.as_dune_v2_repr())],
     )
     print(f"Fetching V2 missing tokens for {network} from {query.url()}")
@@ -102,11 +104,21 @@ def fetch_missing_tokens(dune: DuneClient, network: Network) -> list[Address]:
     return [Address(row["token"]) for row in v2_missing.get_rows()]
 
 
+def write_results(results: list[str], path: str, filename: str, ) -> None:
+    """Writes results to file"""
+    if not os.path.exists(path):
+        os.makedirs(path)
+    with open(os.path.join(path, filename), "w", encoding="utf-8") as file:
+        for row in results:
+            file.write(f"{row}\n")
+        print(f"Results written to {filename}")
+
+
 def run_missing_tokens(chain: Network) -> None:
     """Script's main entry point, runs for given network."""
     w3 = Web3(Web3.HTTPProvider(chain.node_url(os.environ["INFURA_KEY"])))
     missing_tokens = MissingTokenResults(
-        v1=fetch_missing_tokens_legacy(DuneClient(os.environ["DUNE_API_KEY"]), chain),
+        v1=[],
         v2=fetch_missing_tokens(DuneClient(os.environ["DUNE_API_KEY"]), chain),
     )
 
@@ -116,29 +128,26 @@ def run_missing_tokens(chain: Network) -> None:
             f"and {len(missing_tokens.v2)} on V2. Fetching token details...\n"
         )
         token_details = {}
-        for token in missing_tokens.get_all_tokens():
+        skipped = []
+        for token in tqdm(missing_tokens.get_all_tokens()):
             try:
                 # TODO batch the eth_calls used to construct the token contracts.
                 token_details[token] = TokenDetails(address=token, w3=w3)
-            except web3.exceptions.BadFunctionCallOutput:
+            except Exception:
                 print(f"Something wrong with token {token} - skipping.")
+                skipped.append(token)
 
-        v1_results = "\n".join(
-            token_details[t].as_v1_string(chain) for t in missing_tokens.v1
-        )
-        v2_results = "\n".join(
-            token_details[t].as_v2_string() for t in missing_tokens.v2
-        )
-
-        print(f"V1 results:\n\n{v1_results}\n")
-        print(f"V2 results:\n\n{v2_results}\n")
-        # TODO - write to file!
+        print(f"Processing results...\n")
+        res_v1 = [token_details[t].as_v1_string(chain) for t in tqdm(missing_tokens.v1) if t not in skipped]
+        res_v2 = [token_details[t].as_v2_string() for t in tqdm(missing_tokens.v2) if t not in skipped]
+        write_results(results=res_v1, path="./out", filename="missing-tokens-v1.txt")
+        write_results(results=res_v2, path="./out", filename="missing-tokens-v2.txt")
     else:
         print(f"No missing tokens detected on {chain}. Have a good day!")
 
 
 if __name__ == "__main__":
     load_dotenv()
-    for blockchain in list(Network):
+    for blockchain in list([Network.MAINNET,]):
         print(f"Execute on Network {blockchain}")
         run_missing_tokens(chain=blockchain)
